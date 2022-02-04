@@ -68,6 +68,7 @@ public class EmbeddedMemSqlBootstrapConfiguration {
 
         GenericContainer memsql = new GenericContainer<>(properties.dockerImage)
                 .withEnv("IGNORE_MIN_REQUIREMENTS", "1")
+                .withEnv(properties.getEnv())
                 .withExposedPorts(properties.port)
                 .withCopyFileToContainer(MountableFile.forClasspathResource("mem.sql"), "/schema.sql")
                 .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withCapAdd(Capability.NET_ADMIN))
