@@ -4,21 +4,23 @@ import lombok.Builder;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import lombok.Value;
-import org.joda.time.DateTime;
-import org.joda.time.DateTimeUtils;
-import org.joda.time.Duration;
 import org.springframework.util.StringUtils;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoField;
 import java.util.AbstractMap;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
 
+import static java.util.stream.Collectors.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @RequiredArgsConstructor
@@ -28,12 +30,12 @@ public class AerospikeTestOperations {
     private final GenericContainer<?> aerospikeContainer;
 
     public void addDuration(Duration duration) {
-        timeTravel(DateTime.now().plus(duration).plusMinutes(1));
+        timeTravel(LocalDateTime.now().plus(duration).plusMinutes(1));
     }
 
-    public void timeTravelTo(DateTime futureTime) {
-        DateTime now = DateTime.now();
-        if (futureTime.isBeforeNow()) {
+    public void timeTravelTo(LocalDateTime futureTime) {
+        LocalDateTime now = LocalDateTime.now();
+        if (futureTime.isBefore(now)) {
             throw new IllegalArgumentException("Time should be in future. Now is: " + now + " time is:" + futureTime);
         } else {
             timeTravel(futureTime);
@@ -41,12 +43,13 @@ public class AerospikeTestOperations {
     }
 
     public void rollbackTime() {
-        DateTimeUtils.setCurrentMillisSystem();
+
+        //DateTimeUtils.setCurrentMillisSystem();
     }
 
-    private void timeTravel(DateTime newNow) {
-        DateTimeUtils.setCurrentMillisFixed(newNow.getMillis());
-        expiredDocumentsCleaner.cleanExpiredDocumentsBefore(newNow.getMillis());
+    private void timeTravel(LocalDateTime newNow) {
+        //DateTimeUtils.setCurrentMillisFixed(newNow.toInstant(ZoneOffset.systemDefault()).toEpochMilli());
+        expiredDocumentsCleaner.cleanExpiredDocumentsBefore(Instant.from(newNow));
     }
 
     /**
@@ -67,7 +70,7 @@ public class AerospikeTestOperations {
         }
         return Arrays.stream(stdout.replaceAll("\n", "").split(";"))
                 .map(this::parseToObScanJobObject)
-                .collect(Collectors.toList());
+                .collect(toList());
     }
 
     private ScanJob parseToObScanJobObject(String job) {
@@ -77,7 +80,7 @@ public class AerospikeTestOperations {
                     String[] kv = pair.split("=");
                     return new AbstractMap.SimpleEntry<>(kv[0], kv[1]);
                 })
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+                .collect(toMap(Map.Entry::getKey, Map.Entry::getValue));
         return ScanJob.builder()
                 .module(pairsMap.get("module"))
                 .set(pairsMap.get("set"))
@@ -103,7 +106,7 @@ public class AerospikeTestOperations {
     public void assertNoScans(Predicate<ScanJob> scanJobPredicate) {
         List<ScanJob> scanJobs = getScans().stream()
                 .filter(scanJobPredicate)
-                .collect(Collectors.toList());
+                .collect(toList());
         assertThat(scanJobs)
                 .as("Scan jobs")
                 .isEmpty();
