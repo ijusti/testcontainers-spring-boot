@@ -12,16 +12,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.MapPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.containers.wait.strategy.HttpWaitStrategy;
 import org.testcontainers.containers.wait.strategy.WaitStrategy;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Optional;
 
 import static com.playtika.testcontainer.common.utils.ContainerUtils.configureCommonsAndStart;
@@ -49,27 +46,26 @@ public class EmbeddedPrometheusBootstrapConfiguration {
 
     @Bean
     @ConditionalOnToxiProxyEnabled(module = "prometheus")
-    ToxiproxyContainer.ContainerProxy prometheusContainerProxy(ToxiproxyContainer toxiproxyContainer,
+    public ToxiproxyContainer.ContainerProxy prometheusContainerProxy(ToxiproxyContainer toxiproxyContainer,
                                                                @Qualifier(PROMETHEUS_BEAN_NAME) GenericContainer<?> prometheus,
-                                                               ConfigurableEnvironment environment,
                                                                PrometheusProperties properties) {
         ToxiproxyContainer.ContainerProxy proxy = toxiproxyContainer.getProxy(prometheus, properties.getPort());
-
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.prometheus.toxiproxy.host", proxy.getContainerIpAddress());
-        map.put("embedded.prometheus.toxiproxy.port", proxy.getProxyPort());
-        map.put("embedded.prometheus.toxiproxy.proxyName", proxy.getName());
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedPrometheusToxiproxyInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
-        log.info("Started Prometheus ToxiProxy connection details {}", map);
-
+        log.info("Started Prometheus ToxiProxy connection details host={}, port={}, proxyName={}", proxy.getContainerIpAddress(), proxy.getProxyPort(), proxy.getName());
         return proxy;
     }
 
+    @Bean
+    @ConditionalOnToxiProxyEnabled(module = "prometheus")
+    public DynamicPropertyRegistrar prometheusToxiProxyDynamicPropertyRegistrar(@Qualifier("prometheusContainerProxy") ToxiproxyContainer.ContainerProxy proxy) {
+        return registry -> {
+            registry.add("embedded.prometheus.toxiproxy.host", proxy::getContainerIpAddress);
+            registry.add("embedded.prometheus.toxiproxy.port", proxy::getProxyPort);
+            registry.add("embedded.prometheus.toxiproxy.proxyName", proxy::getName);
+        };
+    }
+
     @Bean(name = PROMETHEUS_BEAN_NAME, destroyMethod = "stop")
-    public GenericContainer<?> prometheus(ConfigurableEnvironment environment,
-                                          PrometheusProperties properties,
+    public GenericContainer<?> prometheus(PrometheusProperties properties,
                                           WaitStrategy prometheusWaitStrategy,
                                           Optional<Network> network) {
 
@@ -84,28 +80,19 @@ public class EmbeddedPrometheusBootstrapConfiguration {
 
         configureCommonsAndStart(container, properties, log);
 
-        registerEnvironment(container, environment, properties);
-
         return container;
     }
 
-    private void registerEnvironment(GenericContainer<?> prometheus,
-                                     ConfigurableEnvironment environment,
-                                     PrometheusProperties properties) {
-
-        Integer mappedPort = prometheus.getMappedPort(properties.port);
-        String host = prometheus.getHost();
-
-        LinkedHashMap<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.prometheus.host", host);
-        map.put("embedded.prometheus.port", mappedPort);
-        map.put("embedded.prometheus.staticNetworkAlias", PROMETHEUS_NETWORK_ALIAS);
-        map.put("embedded.prometheus.internalPort", properties.getPort());
-
-        log.info("Started Prometheus server. Connection details: {}", map);
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedPrometheusInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
+    @Bean
+    public DynamicPropertyRegistrar prometheusDynamicPropertyRegistrar(@Qualifier(PROMETHEUS_BEAN_NAME) GenericContainer<?> prometheus, PrometheusProperties properties) {
+        return registry -> {
+            Integer mappedPort = prometheus.getMappedPort(properties.port);
+            String host = prometheus.getHost();
+            registry.add("embedded.prometheus.host", () -> host);
+            registry.add("embedded.prometheus.port", () -> mappedPort);
+            registry.add("embedded.prometheus.staticNetworkAlias", () -> PROMETHEUS_NETWORK_ALIAS);
+            registry.add("embedded.prometheus.internalPort", properties::getPort);
+        };
     }
 
 }

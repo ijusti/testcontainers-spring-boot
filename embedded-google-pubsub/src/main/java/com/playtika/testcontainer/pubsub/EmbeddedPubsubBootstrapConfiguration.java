@@ -13,16 +13,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.MapPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.containers.wait.strategy.LogMessageWaitStrategy;
 
 import java.io.IOException;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Optional;
 
 import static com.playtika.testcontainer.common.utils.ContainerUtils.configureCommonsAndStart;
@@ -43,29 +40,26 @@ public class EmbeddedPubsubBootstrapConfiguration {
 
     @Bean
     @ConditionalOnToxiProxyEnabled(module = "google.pubsub")
-    ToxiproxyContainer.ContainerProxy googlePubSubContainerProxy(ToxiproxyContainer toxiproxyContainer,
+    public ToxiproxyContainer.ContainerProxy googlePubSubContainerProxy(ToxiproxyContainer toxiproxyContainer,
                                                                  @Qualifier(BEAN_NAME_EMBEDDED_GOOGLE_PUBSUB) GenericContainer<?> pubsub,
-                                                                 PubsubProperties properties,
-                                                                 ConfigurableEnvironment environment) {
+                                                                 PubsubProperties properties) {
         ToxiproxyContainer.ContainerProxy proxy = toxiproxyContainer.getProxy(pubsub, properties.getPort());
-
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.google.pubsub.toxiproxy.host", proxy.getContainerIpAddress());
-        map.put("embedded.google.pubsub.toxiproxy.port", proxy.getProxyPort());
-        map.put("embedded.google.pubsub.toxiproxy.proxyName", proxy.getName());
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedGooglePubSubToxiproxyInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
-        log.info("Started Google PubSub ToxiProxy connection details {}", map);
-
+        log.info("Started Google PubSub ToxiProxy connection details host={}, port={}, proxyName={}", proxy.getContainerIpAddress(), proxy.getProxyPort(), proxy.getName());
         return proxy;
     }
 
+    @Bean
+    @ConditionalOnToxiProxyEnabled(module = "google.pubsub")
+    public DynamicPropertyRegistrar googlePubSubToxiProxyDynamicPropertyRegistrar(@Qualifier("googlePubSubContainerProxy") ToxiproxyContainer.ContainerProxy proxy) {
+        return registry -> {
+            registry.add("embedded.google.pubsub.toxiproxy.host", proxy::getContainerIpAddress);
+            registry.add("embedded.google.pubsub.toxiproxy.port", proxy::getProxyPort);
+            registry.add("embedded.google.pubsub.toxiproxy.proxyName", proxy::getName);
+        };
+    }
 
     @Bean(name = BEAN_NAME_EMBEDDED_GOOGLE_PUBSUB, destroyMethod = "stop")
-    public GenericContainer<?> pubsub(ConfigurableEnvironment environment,
-                                      PubsubProperties properties,
-                                      Optional<Network> network) {
+    public GenericContainer<?> pubsub(PubsubProperties properties, Optional<Network> network) {
         GenericContainer<?> pubsubContainer = new GenericContainer<>(ContainerUtils.getDockerImageName(properties))
                 .withExposedPorts(properties.getPort())
                 .withCommand(
@@ -83,25 +77,18 @@ public class EmbeddedPubsubBootstrapConfiguration {
         network.ifPresent(pubsubContainer::withNetwork);
 
         pubsubContainer = configureCommonsAndStart(pubsubContainer, properties, log);
-        registerPubsubEnvironment(pubsubContainer, environment, properties);
         return pubsubContainer;
     }
 
-    private void registerPubsubEnvironment(GenericContainer<?> container,
-                                           ConfigurableEnvironment environment,
-                                           PubsubProperties properties) {
-        LinkedHashMap<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.google.pubsub.port", container.getMappedPort(properties.getPort()));
-        map.put("embedded.google.pubsub.host", container.getHost());
-        map.put("embedded.google.pubsub.project-id", properties.getProjectId());
-        map.put("embedded.google.pubsub.networkAlias", GOOGLE_PUB_SUB_NETWORK_ALIAS);
-        map.put("embedded.google.pubsub.internalPort", properties.getPort());
-
-        log.info("Started Google Cloud Pubsub emulator. Connection details: {}, ", map);
-        log.info("Consult with the doc https://cloud.google.com/pubsub/docs/emulator for more details");
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedGooglePubsubInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
+    @Bean
+    public DynamicPropertyRegistrar googlePubSubDynamicPropertyRegistrar(@Qualifier(BEAN_NAME_EMBEDDED_GOOGLE_PUBSUB) GenericContainer<?> container, PubsubProperties properties) {
+        return registry -> {
+            registry.add("embedded.google.pubsub.port", () -> container.getMappedPort(properties.getPort()));
+            registry.add("embedded.google.pubsub.host", container::getHost);
+            registry.add("embedded.google.pubsub.project-id", properties::getProjectId);
+            registry.add("embedded.google.pubsub.networkAlias", () -> GOOGLE_PUB_SUB_NETWORK_ALIAS);
+            registry.add("embedded.google.pubsub.internalPort", properties::getPort);
+        };
     }
 
     @Bean(name = BEAN_NAME_EMBEDDED_GOOGLE_PUBSUB_MANAGED_CHANNEL)

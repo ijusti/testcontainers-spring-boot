@@ -11,8 +11,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.MapPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.containers.InfluxDBContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
@@ -20,8 +19,6 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.containers.wait.strategy.WaitAllStrategy;
 import org.testcontainers.utility.DockerImageName;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Optional;
 
 import static com.playtika.testcontainer.common.utils.ContainerUtils.configureCommonsAndStart;
@@ -39,28 +36,27 @@ public class EmbeddedInfluxDBBootstrapConfiguration {
 
     @Bean
     @ConditionalOnToxiProxyEnabled(module = "influxdb")
-    ToxiproxyContainer.ContainerProxy influxdbContainerProxy(ToxiproxyContainer toxiproxyContainer,
+    public ToxiproxyContainer.ContainerProxy influxdbContainerProxy(ToxiproxyContainer toxiproxyContainer,
                                                              @Qualifier(EMBEDDED_INFLUX_DB) ConcreteInfluxDbContainer influxdb,
-                                                             InfluxDBProperties properties,
-                                                             ConfigurableEnvironment environment) {
+                                                             InfluxDBProperties properties) {
         ToxiproxyContainer.ContainerProxy proxy = toxiproxyContainer.getProxy(influxdb, properties.getPort());
-
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.influxdb.toxiproxy.host", proxy.getContainerIpAddress());
-        map.put("embedded.influxdb.toxiproxy.port", proxy.getProxyPort());
-        map.put("embedded.influxdb.toxiproxy.proxyName", proxy.getName());
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedInfluxDBToxiproxyInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
-        log.info("Started InfluxDB ToxiProxy connection details {}", map);
-
+        log.info("Started InfluxDB ToxiProxy connection details host={}, port={}, proxyName={}", proxy.getContainerIpAddress(), proxy.getProxyPort(), proxy.getName());
         return proxy;
     }
 
+    @Bean
+    @ConditionalOnToxiProxyEnabled(module = "influxdb")
+    public DynamicPropertyRegistrar influxdbToxiProxyDynamicPropertyRegistrar(
+        @Qualifier("influxdbContainerProxy") ToxiproxyContainer.ContainerProxy proxy) {
+        return registry -> {
+            registry.add("embedded.influxdb.toxiproxy.host", proxy::getContainerIpAddress);
+            registry.add("embedded.influxdb.toxiproxy.port", proxy::getProxyPort);
+            registry.add("embedded.influxdb.toxiproxy.proxyName", proxy::getName);
+        };
+    }
+
     @Bean(name = EMBEDDED_INFLUX_DB, destroyMethod = "stop")
-    public ConcreteInfluxDbContainer influxdb(ConfigurableEnvironment environment,
-                                              InfluxDBProperties properties,
-                                              Optional<Network> network) {
+    public ConcreteInfluxDbContainer influxdb(InfluxDBProperties properties, Optional<Network> network) {
         ConcreteInfluxDbContainer influxDBContainer = new ConcreteInfluxDbContainer(ContainerUtils.getDockerImageName(properties));
         influxDBContainer
                 .withAdmin(properties.getAdminUser())
@@ -77,38 +73,22 @@ public class EmbeddedInfluxDBBootstrapConfiguration {
         influxDBContainer.waitingFor(getInfluxWaitStrategy(properties.getUser(), properties.getPassword()));
 
         influxDBContainer = (ConcreteInfluxDbContainer) configureCommonsAndStart(influxDBContainer, properties, log);
-        registerInfluxEnvironment(influxDBContainer, environment, properties);
         return influxDBContainer;
     }
 
-    private void registerInfluxEnvironment(ConcreteInfluxDbContainer influx,
-                                           ConfigurableEnvironment environment,
-                                           InfluxDBProperties properties) {
-        Integer mappedPort = influx.getMappedPort(properties.getPort());
-        String host = influx.getHost();
-
-        LinkedHashMap<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.influxdb.port", mappedPort);
-        map.put("embedded.influxdb.host", host);
-        map.put("embedded.influxdb.database", properties.getDatabase());
-        map.put("embedded.influxdb.user", properties.getUser());
-        map.put("embedded.influxdb.password", properties.getPassword());
-        map.put("embedded.influxdb.networkAlias", INFLUXDB_NETWORK_ALIAS);
-        map.put("embedded.influxdb.internalPort", properties.getPort());
-
-        String influxDBURL = "http://{}:{}";
-        log.info("Started InfluxDB server. Connection details: {}, " +
-                "HTTP connection url: " + influxDBURL, map, host, mappedPort);
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedInfluxDBInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
-    }
-
-    private static class ConcreteInfluxDbContainer extends InfluxDBContainer<ConcreteInfluxDbContainer> {
-        ConcreteInfluxDbContainer(final DockerImageName dockerImageName) {
-            super(dockerImageName);
-            addExposedPort(INFLUXDB_PORT);
-        }
+    @Bean
+    public DynamicPropertyRegistrar influxdbDynamicPropertyRegistrar(@Qualifier(EMBEDDED_INFLUX_DB) ConcreteInfluxDbContainer influx, InfluxDBProperties properties) {
+        return registry -> {
+            Integer mappedPort = influx.getMappedPort(properties.getPort());
+            String host = influx.getHost();
+            registry.add("embedded.influxdb.port", () -> mappedPort);
+            registry.add("embedded.influxdb.host", () -> host);
+            registry.add("embedded.influxdb.database", properties::getDatabase);
+            registry.add("embedded.influxdb.user", properties::getUser);
+            registry.add("embedded.influxdb.password", properties::getPassword);
+            registry.add("embedded.influxdb.networkAlias", () -> INFLUXDB_NETWORK_ALIAS);
+            registry.add("embedded.influxdb.internalPort", properties::getPort);
+        };
     }
 
     private WaitAllStrategy getInfluxWaitStrategy(String user, String password) {
@@ -117,5 +97,12 @@ public class EmbeddedInfluxDBBootstrapConfiguration {
                         .withBasicCredentials(user, password)
                         .forStatusCode(204))
                 .withStrategy(Wait.forListeningPort());
+    }
+
+    private static class ConcreteInfluxDbContainer extends InfluxDBContainer<ConcreteInfluxDbContainer> {
+        ConcreteInfluxDbContainer(final DockerImageName dockerImageName) {
+            super(dockerImageName);
+            addExposedPort(INFLUXDB_PORT);
+        }
     }
 }

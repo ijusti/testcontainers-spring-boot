@@ -12,14 +12,11 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.MapPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.containers.localstack.LocalStackContainer;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Optional;
 
 import static com.playtika.testcontainer.common.utils.ContainerUtils.configureCommonsAndStart;
@@ -39,73 +36,42 @@ public class EmbeddedLocalStackBootstrapConfiguration {
     @ConditionalOnToxiProxyEnabled(module = "localstack")
     ToxiproxyContainer.ContainerProxy localstackContainerProxy(ToxiproxyContainer toxiproxyContainer,
                                                           @Qualifier(BEAN_NAME_EMBEDDED_LOCALSTACK) LocalStackContainer localStack,
-                                                          LocalStackProperties properties,
-                                                          ConfigurableEnvironment environment) {
-        ToxiproxyContainer.ContainerProxy proxy = toxiproxyContainer.getProxy(localStack, properties.getEdgePort());
+                                                          LocalStackProperties properties) {
+        return toxiproxyContainer.getProxy(localStack, properties.getEdgePort());
+    }
 
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.localstack.toxiproxy.host", proxy.getContainerIpAddress());
-        map.put("embedded.localstack.toxiproxy.port", proxy.getProxyPort());
-        map.put("embedded.localstack.toxiproxy.proxyName", proxy.getName());
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedLocalstackToxiproxyInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
-        log.info("Started Localstack ToxiProxy connection details {}", map);
-
-        return proxy;
+    @Bean
+    @ConditionalOnToxiProxyEnabled(module = "localstack")
+    public DynamicPropertyRegistrar localstackToxiProxyDynamicPropertyRegistrar(
+        @Qualifier("localstackContainerProxy") ToxiproxyContainer.ContainerProxy proxy) {
+        return registry -> {
+            registry.add("embedded.localstack.toxiproxy.host", proxy::getContainerIpAddress);
+            registry.add("embedded.localstack.toxiproxy.port", proxy::getProxyPort);
+            registry.add("embedded.localstack.toxiproxy.proxyName", proxy::getName);
+        };
     }
 
     @ConditionalOnMissingBean(name = BEAN_NAME_EMBEDDED_LOCALSTACK)
     @Bean(name = BEAN_NAME_EMBEDDED_LOCALSTACK, destroyMethod = "stop")
-    public LocalStackContainer localStack(ConfigurableEnvironment environment,
-                                          LocalStackProperties properties,
-                                          Optional<Network> network) {
-        LocalStackContainer localStackContainer = new LocalStackContainer(ContainerUtils.getDockerImageName(properties));
-        localStackContainer
+    public LocalStackContainer localStack(LocalStackProperties properties, Optional<Network> network) {
+        LocalStackContainer localStack = new LocalStackContainer(ContainerUtils.getDockerImageName(properties))
                 .withExposedPorts(properties.getEdgePort())
-                .withEnv("EDGE_PORT", String.valueOf(properties.getEdgePort()))
-                .withEnv("HOSTNAME", properties.getHostname())
-                .withEnv("LOCALSTACK_HOST", properties.getHostnameExternal())
-                .withEnv("SKIP_SSL_CERT_DOWNLOAD", "1")
                 .withNetworkAliases(LOCALSTACK_NETWORK_ALIAS);
-
-        network.ifPresent(localStackContainer::withNetwork);
-
-        for (LocalStackContainer.Service service : properties.services) {
-            localStackContainer.withServices(service);
-        }
-        localStackContainer = (LocalStackContainer) configureCommonsAndStart(localStackContainer, properties, log);
-        registerLocalStackEnvironment(localStackContainer, environment, properties);
-        return localStackContainer;
+        network.ifPresent(localStack::withNetwork);
+        configureCommonsAndStart(localStack, properties, log);
+        return localStack;
     }
 
-    private void registerLocalStackEnvironment(LocalStackContainer localStack,
-                                               ConfigurableEnvironment environment,
-                                               LocalStackProperties properties) {
-        String host = localStack.getHost();
-
-        LinkedHashMap<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.localstack.host", host);
-        map.put("embedded.localstack.accessKey", localStack.getAccessKey());
-        map.put("embedded.localstack.secretKey", localStack.getSecretKey());
-        map.put("embedded.localstack.networkAlias", LOCALSTACK_NETWORK_ALIAS);
-        map.put("embedded.localstack.internalEdgePort", properties.getEdgePort());
-        String prefix = "embedded.localstack.";
-        Integer mappedPort = localStack.getMappedPort(properties.getEdgePort());
-        for (LocalStackContainer.Service service : properties.services) {
-            map.put(prefix + service, localStack.getEndpointOverride(service));
-            map.put(prefix + service + ".port", mappedPort);
-        }
-        log.info("Started Localstack. Connection details: {}", map);
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedLocalStackInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
-        setSystemProperties(localStack);
-    }
-
-    private static void setSystemProperties(LocalStackContainer localStack) {
-        System.setProperty("aws.accessKeyId", localStack.getAccessKey());
-        System.setProperty("aws.secretKey", localStack.getAccessKey());
+    @Bean
+    public DynamicPropertyRegistrar localStackDynamicPropertyRegistrar(
+            @Qualifier(BEAN_NAME_EMBEDDED_LOCALSTACK) LocalStackContainer localStack,
+            LocalStackProperties properties) {
+        return registry -> {
+            registry.add("embedded.localstack.host", localStack::getHost);
+            registry.add("embedded.localstack.port", () -> localStack.getMappedPort(properties.getEdgePort()));
+            registry.add("embedded.localstack.networkAlias", () -> LOCALSTACK_NETWORK_ALIAS);
+            registry.add("embedded.localstack.internalPort", properties::getEdgePort);
+        };
     }
 
 }

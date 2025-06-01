@@ -16,9 +16,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.io.ResourceLoader;
+import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.containers.FixedHostPortGenericContainer;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
@@ -28,12 +27,9 @@ import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Optional;
 
 import static com.playtika.testcontainer.common.utils.ContainerUtils.configureCommonsAndStart;
-import static com.playtika.testcontainer.keydb.EnvUtils.registerKeyDbEnvironment;
 import static com.playtika.testcontainer.keydb.KeyDbProperties.BEAN_NAME_EMBEDDED_KEYDB;
 
 @Slf4j
@@ -67,31 +63,27 @@ public class EmbeddedKeyDbBootstrapConfiguration {
 
   @Bean
   @ConditionalOnToxiProxyEnabled(module = "keydb")
-  ToxiproxyContainer.ContainerProxy keydbContainerProxy(ToxiproxyContainer toxiproxyContainer,
-                                                        @Qualifier(BEAN_NAME_EMBEDDED_KEYDB) GenericContainer<?> keydb,
-                                                        KeyDbProperties properties,
-                                                        ConfigurableEnvironment environment) {
-    ToxiproxyContainer.ContainerProxy proxy = toxiproxyContainer.getProxy(keydb, properties.getPort());
+  public ToxiproxyContainer.ContainerProxy keydbToxiProxy(ToxiproxyContainer toxiproxyContainer,
+                                                          @Qualifier(BEAN_NAME_EMBEDDED_KEYDB) GenericContainer<?> keydb,
+                                                          KeyDbProperties properties) {
+    return toxiproxyContainer.getProxy(keydb, properties.getPort());
+  }
 
-    Map<String, Object> map = new LinkedHashMap<>();
-    map.put("embedded.keydb.toxiproxy.host", proxy.getContainerIpAddress());
-    map.put("embedded.keydb.toxiproxy.port", proxy.getProxyPort());
-    map.put("embedded.keydb.toxiproxy.proxyName", proxy.getName());
-
-    MapPropertySource propertySource = new MapPropertySource("embeddedKeyDbToxiProxyInfo", map);
-    environment.getPropertySources().addFirst(propertySource);
-    log.info("Started KeyDb ToxiProxy connection details {}", map);
-
-    return proxy;
+  @Bean
+  @ConditionalOnToxiProxyEnabled(module = "keydb")
+  public DynamicPropertyRegistrar keydbToxiProxyDynamicPropertyRegistrar(
+      @Qualifier("keydbToxiProxy") ToxiproxyContainer.ContainerProxy proxy) {
+    return registry -> {
+      registry.add("embedded.keydb.toxiproxy.host", proxy::getContainerIpAddress);
+      registry.add("embedded.keydb.toxiproxy.port", proxy::getProxyPort);
+      registry.add("embedded.keydb.toxiproxy.proxyName", proxy::getName);
+      log.info("Started KeyDb ToxiProxy connection details host={}, port={}, proxyName={}", proxy.getContainerIpAddress(), proxy.getProxyPort(), proxy.getName());
+    };
   }
 
   @Bean(name = BEAN_NAME_EMBEDDED_KEYDB, destroyMethod = "stop")
-  public GenericContainer<?> keydb(ConfigurableEnvironment environment,
-                                   @Qualifier(KEYDB_WAIT_STRATEGY_BEAN_NAME) WaitStrategy keydbStartupCheckStrategy,
+  public GenericContainer<?> keydb(@Qualifier(KEYDB_WAIT_STRATEGY_BEAN_NAME) WaitStrategy keydbStartupCheckStrategy,
                                    Optional<Network> network) throws Exception {
-
-    // CLUSTER SLOTS command returns IP:port for each node, so ports outside and inside
-    // container must be the same
     GenericContainer<?> keydb =
       new FixedHostPortGenericContainer(ContainerUtils.getDockerImageName(properties).asCanonicalNameString())
         .withFixedExposedPort(properties.getPort(), properties.getPort())
@@ -105,9 +97,18 @@ public class EmbeddedKeyDbBootstrapConfiguration {
         .withNetworkAliases(KEYDB_NETWORK_ALIAS);
     network.ifPresent(keydb::withNetwork);
     keydb = configureCommonsAndStart(keydb, properties, log);
-    Map<String, Object> keydbEnv = registerKeyDbEnvironment(environment, keydb, properties, properties.getPort());
-    log.info("Started KeyDb cluster. Connection details: {}", keydbEnv);
     return keydb;
+  }
+
+  @Bean
+  public DynamicPropertyRegistrar keydbDynamicPropertyRegistrar(@Qualifier(BEAN_NAME_EMBEDDED_KEYDB) GenericContainer<?> keydb, KeyDbProperties properties) {
+    return registry -> {
+      registry.add("embedded.keydb.port", properties::getPort);
+      registry.add("embedded.keydb.host", keydb::getHost);
+      registry.add("embedded.keydb.password", properties::getPassword);
+      registry.add("embedded.keydb.user", properties::getUser);
+      registry.add("embedded.keydb.networkAlias", () -> KEYDB_NETWORK_ALIAS);
+    };
   }
 
   private Path prepareKeyDbConf() throws IOException {

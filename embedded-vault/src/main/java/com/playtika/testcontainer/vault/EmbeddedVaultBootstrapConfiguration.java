@@ -12,16 +12,13 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.MapPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.vault.VaultContainer;
 
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import static com.playtika.testcontainer.common.utils.ContainerUtils.configureCommonsAndStart;
@@ -41,29 +38,26 @@ public class EmbeddedVaultBootstrapConfiguration {
 
     @Bean
     @ConditionalOnToxiProxyEnabled(module = "vault")
-    ToxiproxyContainer.ContainerProxy vaultContainerProxy(ToxiproxyContainer toxiproxyContainer,
+    public ToxiproxyContainer.ContainerProxy vaultContainerProxy(ToxiproxyContainer toxiproxyContainer,
                                                                @Qualifier(BEAN_NAME_EMBEDDED_VAULT) VaultContainer vault,
-                                                               ConfigurableEnvironment environment,
                                                                VaultProperties properties) {
         ToxiproxyContainer.ContainerProxy proxy = toxiproxyContainer.getProxy(vault, properties.getPort());
-
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.vault.toxiproxy.host", proxy.getContainerIpAddress());
-        map.put("embedded.vault.toxiproxy.port", proxy.getProxyPort());
-        map.put("embedded.vault.toxiproxy.proxyName", proxy.getName());
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedVaultToxiproxyInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
-        log.info("Started Vault ToxiProxy connection details {}", map);
-
+        log.info("Started Vault ToxiProxy connection details host={}, port={}, proxyName={}", proxy.getContainerIpAddress(), proxy.getProxyPort(), proxy.getName());
         return proxy;
     }
 
-    @Bean(name = BEAN_NAME_EMBEDDED_VAULT, destroyMethod = "stop")
-    public VaultContainer vault(ConfigurableEnvironment environment,
-                                VaultProperties properties,
-                                Optional<Network> network) {
+    @Bean
+    @ConditionalOnToxiProxyEnabled(module = "vault")
+    public DynamicPropertyRegistrar vaultToxiProxyDynamicPropertyRegistrar(@Qualifier("vaultContainerProxy") ToxiproxyContainer.ContainerProxy proxy) {
+        return registry -> {
+            registry.add("embedded.vault.toxiproxy.host", proxy::getContainerIpAddress);
+            registry.add("embedded.vault.toxiproxy.port", proxy::getProxyPort);
+            registry.add("embedded.vault.toxiproxy.proxyName", proxy::getName);
+        };
+    }
 
+    @Bean(name = BEAN_NAME_EMBEDDED_VAULT, destroyMethod = "stop")
+    public VaultContainer vault(VaultProperties properties, Optional<Network> network) {
         VaultContainer vault = new VaultContainer<>(ContainerUtils.getDockerImageName(properties))
                 .withVaultToken(properties.getToken())
                 .withExposedPorts(properties.getPort())
@@ -89,27 +83,21 @@ public class EmbeddedVaultBootstrapConfiguration {
         }
 
         vault = (VaultContainer) configureCommonsAndStart(vault, properties, log);
-        registerVaultEnvironment(vault, environment, properties);
         return vault;
     }
 
-    private void registerVaultEnvironment(VaultContainer vault, ConfigurableEnvironment environment, VaultProperties properties) {
-        Integer mappedPort = vault.getMappedPort(properties.getPort());
-        String host = vault.getHost();
-
-        LinkedHashMap<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.vault.host", host);
-        map.put("embedded.vault.port", mappedPort);
-        map.put("embedded.vault.token", properties.getToken());
-        map.put("embedded.vault.networkAlias", VAULT_NETWORK_ALIAS);
-        map.put("embedded.vault.internalPort", properties.getPort());
-
-        log.info("Started vault. Connection Details: {}, Connection URI: http://{}:{}", map, host, mappedPort);
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedVaultInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
+    @Bean
+    public DynamicPropertyRegistrar vaultDynamicPropertyRegistrar(@Qualifier(BEAN_NAME_EMBEDDED_VAULT) VaultContainer vault, VaultProperties properties) {
+        return registry -> {
+            Integer mappedPort = vault.getMappedPort(properties.getPort());
+            String host = vault.getHost();
+            registry.add("embedded.vault.host", () -> host);
+            registry.add("embedded.vault.port", () -> mappedPort);
+            registry.add("embedded.vault.token", properties::getToken);
+            registry.add("embedded.vault.networkAlias", () -> VAULT_NETWORK_ALIAS);
+            registry.add("embedded.vault.internalPort", properties::getPort);
+        };
     }
-
 
     private void enableCasForSubPaths(List<String> subPaths, VaultContainer vault) {
         for (String subPath : subPaths) {

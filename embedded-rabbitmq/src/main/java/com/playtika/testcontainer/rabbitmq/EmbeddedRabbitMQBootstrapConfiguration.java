@@ -11,8 +11,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.MapPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.RabbitMQContainer;
 import org.testcontainers.containers.ToxiproxyContainer;
@@ -37,29 +36,27 @@ public class EmbeddedRabbitMQBootstrapConfiguration {
 
     @Bean
     @ConditionalOnToxiProxyEnabled(module = "rabbitmq")
-    ToxiproxyContainer.ContainerProxy rabbitmqContainerProxy(ToxiproxyContainer toxiproxyContainer,
-                                                               @Qualifier(BEAN_NAME_EMBEDDED_RABBITMQ) RabbitMQContainer rabbitmq,
-                                                               ConfigurableEnvironment environment,
-                                                               RabbitMQProperties properties) {
+    public ToxiproxyContainer.ContainerProxy rabbitmqContainerProxy(ToxiproxyContainer toxiproxyContainer,
+                                                                   @Qualifier(BEAN_NAME_EMBEDDED_RABBITMQ) RabbitMQContainer rabbitmq,
+                                                                   RabbitMQProperties properties) {
         ToxiproxyContainer.ContainerProxy proxy = toxiproxyContainer.getProxy(rabbitmq, properties.getPort());
-
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.rabbitmq.toxiproxy.host", proxy.getContainerIpAddress());
-        map.put("embedded.rabbitmq.toxiproxy.port", proxy.getProxyPort());
-        map.put("embedded.rabbitmq.toxiproxy.proxyName", proxy.getName());
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedRabbitmqToxiproxyInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
-        log.info("Started Rabbitmq ToxiProxy connection details {}", map);
-
+        log.info("Started Rabbitmq ToxiProxy connection details host={}, port={}, proxyName={}", proxy.getContainerIpAddress(), proxy.getProxyPort(), proxy.getName());
         return proxy;
     }
 
-    @Bean(name = BEAN_NAME_EMBEDDED_RABBITMQ, destroyMethod = "stop")
-    public RabbitMQContainer rabbitmq(ConfigurableEnvironment environment,
-                                      RabbitMQProperties properties,
-                                      Optional<Network> network) {
+    @Bean
+    @ConditionalOnToxiProxyEnabled(module = "rabbitmq")
+    public DynamicPropertyRegistrar rabbitmqToxiProxyDynamicPropertyRegistrar(@Qualifier("rabbitmqContainerProxy") ToxiproxyContainer.ContainerProxy proxy) {
+        return registry -> {
+            registry.add("embedded.rabbitmq.toxiproxy.host", proxy::getContainerIpAddress);
+            registry.add("embedded.rabbitmq.toxiproxy.port", proxy::getProxyPort);
+            registry.add("embedded.rabbitmq.toxiproxy.proxyName", proxy::getName);
+        };
+    }
 
+    @Bean(name = BEAN_NAME_EMBEDDED_RABBITMQ, destroyMethod = "stop")
+    public RabbitMQContainer rabbitmq(RabbitMQProperties properties,
+                                      Optional<Network> network) {
         Integer[] exposedPorts = Stream.concat(properties.getAdditionalPorts().stream(), Stream.of(properties.getPort(), properties.getHttpPort()))
                 .distinct()
                 .toArray(Integer[]::new);
@@ -77,40 +74,34 @@ public class EmbeddedRabbitMQBootstrapConfiguration {
 
         network.ifPresent(rabbitMQ::withNetwork);
         rabbitMQ = (RabbitMQContainer) configureCommonsAndStart(rabbitMQ, properties, log);
-        registerRabbitMQEnvironment(rabbitMQ, environment, properties);
-        return rabbitMQ;
-    }
-
-    private void registerRabbitMQEnvironment(RabbitMQContainer rabbitMQ,
-                                             ConfigurableEnvironment environment,
-                                             RabbitMQProperties properties) {
         Integer mappedPort = rabbitMQ.getMappedPort(properties.getPort());
         Integer mappedHttpPort = rabbitMQ.getMappedPort(properties.getHttpPort());
-
         Map<Integer, Integer> additionalPorts = new LinkedHashMap<>();
         for (Integer port : properties.getAdditionalPorts()) {
             additionalPorts.put(port, rabbitMQ.getMappedPort(port));
         }
-
         String host = rabbitMQ.getHost();
+        log.info("Started RabbitMQ server. Connection details: port={}, host={}, vhost={}, user={}, password={}, httpPort={}, networkAlias={}, internalPort={}, internalHttpPort={}, additionalPorts={}",
+                mappedPort, host, properties.getVhost(), rabbitMQ.getAdminUsername(), rabbitMQ.getAdminPassword(), mappedHttpPort, RABBITMQ_NETWORK_ALIAS, properties.getPort(), properties.getHttpPort(), additionalPorts);
+        return rabbitMQ;
+    }
 
-        LinkedHashMap<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.rabbitmq.port", mappedPort);
-        map.put("embedded.rabbitmq.host", host);
-        map.put("embedded.rabbitmq.vhost", properties.getVhost());
-        map.put("embedded.rabbitmq.user", rabbitMQ.getAdminUsername());
-        map.put("embedded.rabbitmq.password", rabbitMQ.getAdminPassword());
-        map.put("embedded.rabbitmq.httpPort", mappedHttpPort);
-        map.put("embedded.rabbitmq.networkAlias", RABBITMQ_NETWORK_ALIAS);
-        map.put("embedded.rabbitmq.internalPort", properties.getPort());
-        map.put("embedded.rabbitmq.internalHttpPort", properties.getHttpPort());
-        for (Integer port : additionalPorts.keySet()) {
-            map.put("embedded.rabbitmq.additionalPorts." + port, additionalPorts.get(port));
-        }
-
-        log.info("Started RabbitMQ server. Connection details: {}", map);
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedRabbitMqInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
+    @Bean
+    public DynamicPropertyRegistrar rabbitmqDynamicPropertyRegistrar(@Qualifier(BEAN_NAME_EMBEDDED_RABBITMQ) RabbitMQContainer rabbitMQ, RabbitMQProperties properties) {
+        return registry -> {
+            registry.add("embedded.rabbitmq.port", () -> rabbitMQ.getMappedPort(properties.getPort()));
+            registry.add("embedded.rabbitmq.host", rabbitMQ::getHost);
+            registry.add("embedded.rabbitmq.vhost", properties::getVhost);
+            registry.add("embedded.rabbitmq.user", rabbitMQ::getAdminUsername);
+            registry.add("embedded.rabbitmq.password", rabbitMQ::getAdminPassword);
+            registry.add("embedded.rabbitmq.httpPort", () -> rabbitMQ.getMappedPort(properties.getHttpPort()));
+            registry.add("embedded.rabbitmq.networkAlias", () -> RABBITMQ_NETWORK_ALIAS);
+            registry.add("embedded.rabbitmq.internalPort", properties::getPort);
+            registry.add("embedded.rabbitmq.internalHttpPort", properties::getHttpPort);
+            for (Integer port : properties.getAdditionalPorts()) {
+                int mapped = rabbitMQ.getMappedPort(port);
+                registry.add("embedded.rabbitmq.additionalPorts." + port, () -> mapped);
+            }
+        };
     }
 }

@@ -16,9 +16,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.io.ResourceLoader;
+import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.containers.FixedHostPortGenericContainer;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
@@ -28,12 +27,9 @@ import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Optional;
 
 import static com.playtika.testcontainer.common.utils.ContainerUtils.configureCommonsAndStart;
-import static com.playtika.testcontainer.redis.EnvUtils.registerRedisEnvironment;
 import static com.playtika.testcontainer.redis.RedisProperties.BEAN_NAME_EMBEDDED_REDIS;
 
 @Slf4j
@@ -69,29 +65,27 @@ public class EmbeddedRedisBootstrapConfiguration {
     @ConditionalOnToxiProxyEnabled(module = "redis")
     ToxiproxyContainer.ContainerProxy redisContainerProxy(ToxiproxyContainer toxiproxyContainer,
                                                               @Qualifier(BEAN_NAME_EMBEDDED_REDIS) GenericContainer<?> redis,
-                                                              RedisProperties properties,
-                                                              ConfigurableEnvironment environment) {
+                                                              RedisProperties properties) {
         ToxiproxyContainer.ContainerProxy proxy = toxiproxyContainer.getProxy(redis, properties.getPort());
 
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("embedded.redis.toxiproxy.host", proxy.getContainerIpAddress());
-        map.put("embedded.redis.toxiproxy.port", proxy.getProxyPort());
-        map.put("embedded.redis.toxiproxy.proxyName", proxy.getName());
-
-        MapPropertySource propertySource = new MapPropertySource("embeddedRedisToxiProxyInfo", map);
-        environment.getPropertySources().addFirst(propertySource);
-        log.info("Started Redis ToxiProxy connection details {}", map);
 
         return proxy;
     }
 
-    @Bean(name = BEAN_NAME_EMBEDDED_REDIS, destroyMethod = "stop")
-    public GenericContainer<?> redis(ConfigurableEnvironment environment,
-                                     @Qualifier(REDIS_WAIT_STRATEGY_BEAN_NAME) WaitStrategy redisStartupCheckStrategy,
-                                     Optional<Network> network) throws Exception {
+    @Bean
+    @ConditionalOnToxiProxyEnabled(module = "redis")
+    public DynamicPropertyRegistrar redisToxiProxyDynamicPropertyRegistrar(
+            @Qualifier("redisContainerProxy") ToxiproxyContainer.ContainerProxy proxy) {
+        return registry -> {
+            registry.add("embedded.redis.toxiproxy.host", proxy::getContainerIpAddress);
+            registry.add("embedded.redis.toxiproxy.port", proxy::getProxyPort);
+            registry.add("embedded.redis.toxiproxy.proxyName", proxy::getName);
+        };
+    }
 
-        // CLUSTER SLOTS command returns IP:port for each node, so ports outside and inside
-        // container must be the same
+    @Bean(name = BEAN_NAME_EMBEDDED_REDIS, destroyMethod = "stop")
+    public GenericContainer<?> redis(@Qualifier(REDIS_WAIT_STRATEGY_BEAN_NAME) WaitStrategy redisStartupCheckStrategy,
+                                     Optional<Network> network) throws Exception {
         GenericContainer<?> redis =
                 new FixedHostPortGenericContainer(ContainerUtils.getDockerImageName(properties).asCanonicalNameString())
                         .withFixedExposedPort(properties.getPort(), properties.getPort())
@@ -105,9 +99,18 @@ public class EmbeddedRedisBootstrapConfiguration {
                         .withNetworkAliases(REDIS_NETWORK_ALIAS);
         network.ifPresent(redis::withNetwork);
         redis = configureCommonsAndStart(redis, properties, log);
-        Map<String, Object> redisEnv = registerRedisEnvironment(environment, redis, properties, properties.getPort());
-        log.info("Started Redis cluster. Connection details: {}", redisEnv);
         return redis;
+    }
+
+    @Bean
+    public DynamicPropertyRegistrar redisDynamicPropertyRegistrar(@Qualifier(BEAN_NAME_EMBEDDED_REDIS) GenericContainer<?> redis, RedisProperties properties) {
+        return registry -> {
+            registry.add("embedded.redis.port", properties::getPort);
+            registry.add("embedded.redis.host", redis::getHost);
+            registry.add("embedded.redis.password", properties::getPassword);
+            registry.add("embedded.redis.user", properties::getUser);
+            registry.add("embedded.redis.networkAlias", () -> REDIS_NETWORK_ALIAS);
+        };
     }
 
     private Path prepareRedisConf() throws IOException {
