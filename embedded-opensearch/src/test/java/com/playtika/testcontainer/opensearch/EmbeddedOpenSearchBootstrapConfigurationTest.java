@@ -1,12 +1,12 @@
 package com.playtika.testcontainer.opensearch;
 
-import org.apache.http.auth.AuthScope;
-import org.apache.http.auth.UsernamePasswordCredentials;
-import org.apache.http.client.CredentialsProvider;
-import org.apache.http.conn.ssl.TrustAllStrategy;
-import org.apache.http.impl.client.BasicCredentialsProvider;
-import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
-import org.apache.http.ssl.SSLContextBuilder;
+import org.apache.hc.client5.http.auth.AuthScope;
+import org.apache.hc.client5.http.auth.CredentialsProvider;
+import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
+import org.apache.hc.client5.http.impl.async.HttpAsyncClientBuilder;
+import org.apache.hc.client5.http.impl.auth.BasicCredentialsProvider;
+import org.apache.hc.client5.http.ssl.TrustAllStrategy;
+import org.apache.hc.core5.ssl.SSLContextBuilder;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 import org.opensearch.client.RestClientBuilder;
@@ -72,8 +72,8 @@ public abstract class EmbeddedOpenSearchBootstrapConfigurationTest {
 
                 CredentialsProvider credentialsProvider() {
                     final CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
-                    credentialsProvider.setCredentials(
-                            AuthScope.ANY, new UsernamePasswordCredentials(properties.getUsername(), properties.getPassword())
+                    ((BasicCredentialsProvider) credentialsProvider).setCredentials(
+                            new AuthScope("",1), new UsernamePasswordCredentials(properties.getUsername(), properties.getPassword().toCharArray())
                     );
                     return credentialsProvider;
                 }
